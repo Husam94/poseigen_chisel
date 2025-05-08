@@ -1,10 +1,7 @@
-import os
-import pickle
 import numpy as np
 import pandas as pd
 
 from Bio.Seq import reverse_complement
-from Bio.SeqIO.FastaIO import SimpleFastaParser
 import pyBigWig
 import pysam
 
