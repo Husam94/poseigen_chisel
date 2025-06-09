@@ -7,7 +7,7 @@ requires = ["setuptools",
 			"pandas",
       "biopython",
       "pyBigWig", 
-      "pysam"
+      "pysam",
       "poseigen_seaside"			
 			]
 
@@ -15,7 +15,7 @@ requires = ["setuptools",
 
 name = "poseigen_chisel"
 
-version = "0.0.1" 
+version = "0.0.2" 
 
 requires-python = ">=3.12"
 
@@ -55,7 +55,7 @@ dependencies = [
   "pandas",
   "biopython",
   "pyBigWig", 
-  "pysam"
+  "pysam",
   "poseigen_seaside"			
   ]
 
