@@ -69,13 +69,72 @@ def CurrentZeroExpander(SigCurrent, reso, exp_size):
         zers = np.where(np.max(Z, axis = 1) == 0)[0]
         newT = np.ones(len(Z))
         for ze in zers: 
-            newT[ze - exp_size: ze + exp_size ] = 0
+            newT[ze - exp_size: ze + exp_size + 1] = 0
         
         nT.append(newT.reshape(-1, 1))
         
     return nT
 
-def CurrentFlagger(SigCurrent, reso = 5, window = 1000, stride = 50, flagmode = np.argmax): 
+def CurrentOnesExpander(SigCurrent, reso, exp_size): 
+    exp_size = (exp_size // reso) // 2
+    
+    nT = []
+    for Z in SigCurrent: 
+        ones = np.where(np.max(Z, axis=1) != 0)[0]  # Find indices where there are ones
+        newT = np.zeros(len(Z))  # Start with all zeros
+        for one in ones: 
+            newT[one - exp_size: one + exp_size] = 1  # Expand ones in the specified range
+        
+        nT.append(newT.reshape(-1, 1))
+        
+    return nT
+
+# def CurrentFlagger(SigCurrent, reso = 5, window = 1000, stride = 50, flagmode = np.argmax): 
+    
+#     # EDITED 22.11.06
+#     #flagmode can be either np.argmax, np.argmin or any index searcher 
+
+#     #FLAG NEED TO BE A SINGLE TYPE SHAPE (-1, 1)
+    
+#     window, stride = (0 if x is None else x//reso for x in [window,stride])
+#     window, stride = (1 if x == 0 else x for x in [window,stride])
+    
+#     j = SigCurrent[0].shape[1]
+#     ms = []
+#     for z in SigCurrent:
+
+#         y = z.copy()
+#         lz = len(z)
+
+#         for i in range(lz - window + 1)[::stride]: 
+#             newwin = np.zeros((window, j))
+#             win1 = y[i: i + window]
+#             if np.sum(win1) != 0: 
+#                 fa = flagmode(y[i: i + window])
+#                 newwin[fa] = y[fa + i]
+#                 y[i: i + window] = newwin 
+        
+#         ms.append(y) 
+    
+#     return ms
+
+def _process_signal_worker(args):
+    """Helper function for multiprocessing in CurrentFlagger"""
+    z, window, j, flagmode = args
+    y = z.copy()
+    lz = len(z)
+
+    for i in range(lz - window + 1):
+        newwin = np.zeros((window, j))
+        win1 = y[i: i + window]
+        if np.sum(win1) != 0: 
+            fa = flagmode(y[i: i + window])
+            newwin[fa] = y[fa + i]
+            y[i: i + window] = newwin 
+    
+    return y
+
+def CurrentFlagger(SigCurrent, reso = 5, window = 1000, stride = 50, flagmode = np.argmax, parallel = False): 
     
     # EDITED 22.11.06
     #flagmode can be either np.argmax, np.argmin or any index searcher 
@@ -86,21 +145,26 @@ def CurrentFlagger(SigCurrent, reso = 5, window = 1000, stride = 50, flagmode = 
     window, stride = (1 if x == 0 else x for x in [window,stride])
     
     j = SigCurrent[0].shape[1]
-    ms = []
-    for z in SigCurrent:
+    
+    if parallel:
+        args_list = [(z, window, j, flagmode) for z in SigCurrent]
+        with multiprocessing.Pool() as pool:
+            ms = pool.map(_process_signal_worker, args_list)
+    else:
+        ms = []
+        for z in SigCurrent:
+            y = z.copy()
+            lz = len(z)
 
-        y = z.copy()
-        lz = len(z)
-
-        for i in range(lz - window + 1)[::stride]: 
-            newwin = np.zeros((window, j))
-            win1 = y[i: i + window]
-            if np.sum(win1) != 0: 
-                fa = flagmode(y[i: i + window])
-                newwin[fa] = y[fa + i]
-                y[i: i + window] = newwin 
-        
-        ms.append(y) 
+            for i in range(lz - window + 1)[::stride]: 
+                newwin = np.zeros((window, j))
+                win1 = y[i: i + window]
+                if np.sum(win1) != 0: 
+                    fa = flagmode(y[i: i + window])
+                    newwin[fa] = y[fa + i]
+                    y[i: i + window] = newwin 
+            
+            ms.append(y)
     
     return ms
 
@@ -154,6 +218,19 @@ def CurrentScaler(MergedSigCurrent, rounds = 1, dtype = np.float64):
 
     return msg_scaled
 
+
+def CurrentScaleBy(inp1, inp2): 
+
+    ''' CURRENTLY ONLY WORKS FOR SINGLE CURRENTS'''
+
+
+    inp1_sum, inp2_sum = [np.vstack(x).sum() for x in [inp1, inp2]]
+
+    rel2by = inp2_sum/inp1_sum
+
+    inp1_scaled = [v * rel2by for v in inp1]
+
+    return inp1_scaled
 
 
 
@@ -447,13 +524,18 @@ def SeqCurrent2Slice(SeqCurrent, Marker, BS_ids, select_BS_ids, Vsize = 1000, st
     
     return seqmode[0]([V], **seqmode[1]) if seqmode is not None else V 
 
-def SeqCurrent2Pack(SeqCurrent, Markers, BS_ids, select_BS_ids = None, Vsize = 1000, seqmode = None, stranded = False): 
+def SeqCurrent2Pack(SeqCurrent, Markers, BS_ids, select_BS_ids = None, Vsize = 1000, seqmode = None, stranded = False, offset = None): 
     #mode is either Seqs2OHE or Seqs2OHERC 
     #if RC is true, it will add the reverse complement of the pack at the end 
 
     print('WARNING: SOMETHING IS WRONG WITH THE SELECBS_IDS')
     
     select_BS_ids = BS_ids if select_BS_ids is None else select_BS_ids
+    
+    # Apply offset to markers if specified
+    if offset is not None:
+        Markers = Markers.copy()
+        Markers.iloc[:, 1] = Markers.iloc[:, 1] + offset
     
     seqs = [] 
     markers_nogood = []
@@ -495,14 +577,12 @@ def CentTransPack(transpack, window, reso):
 
     #transpack shape: (obs, len, diff) 
 
-    #
-
     tp_shape = transpack.shape
     
     win = window // reso 
 
     numwins = tp_shape[1] - win + 1
-    centwin = numwins // 2
+    centwin = (numwins - 1) // 2  # This gives the true center for both odd and even
 
     ST = np.lib.stride_tricks.sliding_window_view
     tp_win = ST(transpack, (1, win, tp_shape[-1]))
@@ -570,36 +650,191 @@ def MakeTransAugs(packs,
     return newjs
 
 
+def StackTransAugsHorizontal(trans_aug, num_shifts):
+    """
+    Repack MakeTransAugs output from shape (N * num_shifts, M, C)
+    to (N, M * num_shifts, C) by concatenating shifts along length.
+    """
+    n_total, M, *rest = trans_aug.shape
+    assert n_total % num_shifts == 0, "total samples not divisible by num_shifts"
+    N = n_total // num_shifts
+
+    # (num_shifts, N, M, C, ...)
+    ta = trans_aug.reshape(num_shifts, N, M, *rest)
+    # (N, num_shifts, M, C, ...)
+    ta = np.transpose(ta, (1, 0, 2) + tuple(range(3, ta.ndim)))
+    # (N, M * num_shifts, C, ...)
+    return ta.reshape(N, M * num_shifts, *rest)
 
 
 
 
-def Bw2Current(fileloc, BS_sizes, BS_ids, select_BS_ids = None, newreso = 20, resomode = np.sum, window = None, dtype = None):
+# def Bw2Current(fileloc, BS_sizes, BS_ids, select_BS_ids = None, newreso = 20, resomode = np.sum, window = None, dtype = None):
     
-    select_BS_ids = BS_ids if select_BS_ids is None else select_BS_ids 
+#     select_BS_ids = BS_ids if select_BS_ids is None else select_BS_ids 
     
-    bw =  pyBigWig.open(fileloc)
+#     bw =  pyBigWig.open(fileloc)
+
+#     bw_chrs = list(bw.chroms().keys())
     
-    T = []
-    for z in select_BS_ids: 
-        ind = BS_ids.index(z)
-        m = np.zeros(BS_sizes[ind])
-        if dtype is not None: m = m.astype(dtype) 
+#     T = []
+#     for z in select_BS_ids: 
+
+#         print(fileloc, z)
+
+#         ind = BS_ids.index(z)
+#         m = np.zeros(BS_sizes[ind])
+#         if dtype is not None: m = m.astype(dtype) 
+
+#         if z in bw_chrs: 
         
-        if window is not None: 
+#             if window is not None: 
+#                 for x in bw.intervals(z):
+#                     if x[1]-x[0] < window: m[x[0]:x[1]] = x[2]
+#             else: 
+#                 for x in bw.intervals(z): 
+#                     try: 
+#                         m[x[0]:x[1]] = x[2]
+#                     except: 
+#                         print('not right size')
+        
+#         else: print(f'{z} not in bigwig')
+        
+#         if newreso > 1: 
+#             newlength = newreso * (BS_sizes[ind] // newreso)
+#             m = resomode(m[:newlength].reshape(-1, newreso), axis=1)
+        
+#         if dtype is not None: m = m.astype(dtype) 
+#         T.append(m.reshape(-1,1))
+    
+#     return T
+
+
+def _process_bigwig_chromosome(args):
+    """Helper function for parallel processing of BigWig chromosomes"""
+    fileloc, z, BS_sizes, BS_ids, newreso, resomode, window, dtype = args
+    
+    bw = pyBigWig.open(fileloc)
+    bw_chrs = list(bw.chroms().keys())
+    
+    ind = BS_ids.index(z)
+    m = np.zeros(BS_sizes[ind])
+    if dtype is not None: 
+        m = m.astype(dtype)
+    
+    if z in bw_chrs:
+        if window is not None:
             for x in bw.intervals(z):
-                if x[1]-x[0] < window: m[x[0]:x[1]] = x[2]
-        else: 
-            for x in bw.intervals(z): m[x[0]:x[1]] = x[2]
-        if newreso > 1: 
-            newlength = newreso * (BS_sizes[ind] // newreso)
-            m = resomode(m[:newlength].reshape(-1, newreso), axis=1)
+                if x[1] - x[0] < window:
+                    m[x[0]:x[1]] = x[2]
+        else:
+            for x in bw.intervals(z):
+                try:
+                    m[x[0]:x[1]] = x[2]
+                except:
+                    print(f'not right size for {z}')
+    else:
+        print(f'{z} not in bigwig')
+    
+    if newreso > 1:
+        newlength = newreso * (BS_sizes[ind] // newreso)
+        m = resomode(m[:newlength].reshape(-1, newreso), axis=1)
+    
+    if dtype is not None:
+        m = m.astype(dtype)
+    
+    bw.close()
+    return m.reshape(-1, 1)
+
+def Bw2Current(fileloc, BS_sizes, BS_ids, select_BS_ids = None, newreso = 20, 
+               resomode = np.sum, window = None, dtype = None, parallel = True, n_jobs = -1):
+    """
+    Convert BigWig file to current format with optional parallelization.
+    
+    Parameters:
+    -----------
+    fileloc : str
+        Path to BigWig file
+    BS_sizes : list
+        List of chromosome/contig sizes
+    BS_ids : list
+        List of chromosome/contig IDs
+    select_BS_ids : list or None
+        Subset of BS_ids to process (default: None, processes all)
+    newreso : int
+        New resolution for binning (default: 20)
+    resomode : function
+        Function to apply when binning (default: np.sum)
+    window : int or None
+        Maximum interval size to include (default: None)
+    dtype : np.dtype or None
+        Data type for output arrays (default: None)
+    parallel : bool
+        Whether to use parallel processing (default: True)
+    n_jobs : int
+        Number of parallel jobs. -1 uses all cores (default: -1)
         
-        if dtype is not None: m = m.astype(dtype) 
-        T.append(m.reshape(-1,1))
+    Returns:
+    --------
+    list
+        List of arrays, one per chromosome
+    """
+    select_BS_ids = BS_ids if select_BS_ids is None else select_BS_ids
+    
+    if not parallel or len(select_BS_ids) == 1:
+        # Sequential processing (original implementation)
+        bw = pyBigWig.open(fileloc)
+        bw_chrs = list(bw.chroms().keys())
+        
+        T = []
+        for z in select_BS_ids:
+            print(fileloc, z)
+            
+            ind = BS_ids.index(z)
+            m = np.zeros(BS_sizes[ind])
+            if dtype is not None:
+                m = m.astype(dtype)
+            
+            if z in bw_chrs:
+                if window is not None:
+                    for x in bw.intervals(z):
+                        if x[1] - x[0] < window:
+                            m[x[0]:x[1]] = x[2]
+                else:
+                    for x in bw.intervals(z):
+                        try:
+                            m[x[0]:x[1]] = x[2]
+                        except:
+                            print('not right size')
+            else:
+                print(f'{z} not in bigwig')
+            
+            if newreso > 1:
+                newlength = newreso * (BS_sizes[ind] // newreso)
+                m = resomode(m[:newlength].reshape(-1, newreso), axis=1)
+            
+            if dtype is not None:
+                m = m.astype(dtype)
+            T.append(m.reshape(-1, 1))
+        
+        bw.close()
+        return T
+    
+    # Parallel processing
+    n_workers = multiprocessing.cpu_count() if n_jobs == -1 else n_jobs
+    n_workers = min(n_workers, len(select_BS_ids))
+    
+    print(f"Processing {len(select_BS_ids)} chromosomes with {n_workers} workers...")
+    
+    # Prepare arguments for parallel processing
+    args_list = [(fileloc, z, BS_sizes, BS_ids, newreso, resomode, window, dtype) 
+                 for z in select_BS_ids]
+    
+    # Process in parallel
+    with multiprocessing.Pool(processes=n_workers) as pool:
+        T = pool.map(_process_bigwig_chromosome, args_list)
     
     return T
-
 
 
 def Currents2Current(SigCurrents): 
@@ -714,7 +949,7 @@ def Slicer(Current, Markers, BS_ids, select_BS_ids = None, Vsize = 1000, reso = 
     Markers_3 = np.stack([Markers_A[:, 0], cent - (Vsize_curr // 2)], axis = 1)
 
     ST = np.lib.stride_tricks.sliding_window_view
-    currents_win = [ST(c, (Vsize_curr, c.shape[-1])) for c in Current]
+    currents_win = [ST(c, (Vsize_curr, *c.shape[1:])) for c in Current]
 
     div = np.stack([currents_win[m[0]][m[1]] for m in Markers_3], axis = 0)
 
@@ -741,65 +976,68 @@ def BamMakeIndex(fileloc):
     pysam.index(fileloc)
     return 
 
-def Bam2Current(fileloc, BS_sizes, BS_ids, select_BS_ids = None, 
-                center = None,
-                newreso = 20, resomode = np.sum, stranded = True, 
-                read_length = None, paired = False, 
-                dtype = None): 
-    
-    #From 22.08.29.Bam2Current
-    #When paired is True, the mates are mapped only by the first mate. Reads with unmapped mates are mapped as single end reads. 
-    
-    #22.09.14. added dtype for memory. could be np.int or np.float with 8/16/32. 
+from concurrent.futures import ThreadPoolExecutor
+import multiprocessing
 
-    #25.03.30. Added center option. Removed make index, made a seperate function for that
+def Bam2Current(fileloc, BS_sizes, BS_ids, select_BS_ids=None, 
+                center=None, newreso=20, resomode=np.sum, stranded=True, 
+                read_length=None, paired=False, dtype=None, max_workers = 8): 
+    
+    # From 22.08.29.Bam2Current
+    # When paired is True, the mates are mapped only by the first mate. Reads with unmapped mates are mapped as single end reads. 
+    
+    # 22.09.14. added dtype for memory. could be np.int or np.float with 8/16/32. 
+
+    # 25.03.30. Added center option. Removed make index, made a separate function for that
     
     select_BS_ids = BS_ids if select_BS_ids is None else select_BS_ids 
-    
     samfile = pysam.AlignmentFile(fileloc, 'rb')
-
     centx = center // 2 if center is not None else None
-    
-    T = []
-    for z in select_BS_ids: 
 
+    def process_chromosome(z):
         ind = BS_ids.index(z)
         ls = BS_sizes[ind]
-        m = np.zeros((ls, 2), dtype = int)
+        m = np.zeros((ls, 2), dtype=int)
 
         for read in samfile.fetch(z): 
             rp, rl, rt = read.pos, read.rlen, read.tlen
-            
             rx = read_length if read_length is not None else rl 
             
-            if paired == True and rt != 0: 
-                if '{0:012b}'.format(read.flag)[::-1][6] == '1': rx = abs(read.tlen)
-                else: continue 
+            if paired and rt != 0: 
+                if '{0:012b}'.format(read.flag)[::-1][6] == '1': 
+                    rx = abs(read.tlen)
+                else: 
+                    continue 
                 
             rp, st, e1, e2 = (rp + rl + 1, 1, rx, 0) if '{0:012b}'.format(read.flag)[::-1][4] == '1' else (rp, 0, 0, rx)
-
-            j,k = rp-e1, rp+e2
+            j, k = rp - e1, rp + e2
 
             if centx is not None: 
-                jk_cent = j + ((k-j) // 2)
+                jk_cent = j + ((k - j) // 2)
                 j, k = (jk_cent - centx, jk_cent + centx + 1)
 
-            if j < 0: j = 0
+            if j < 0: 
+                j = 0
 
             m[j:k, st] += 1
         
-        if stranded == False: m = np.sum(m, axis = 1).reshape(-1,1)
+        if not stranded: 
+            m = np.sum(m, axis=1).reshape(-1, 1)
     
         if newreso is not None:
             newlength = newreso * (BS_sizes[ind] // newreso)
-            m = resomode(m[:newlength].reshape(newlength//newreso, newreso, -1), axis = 1)
+            m = resomode(m[:newlength].reshape(newlength // newreso, newreso, -1), axis=1)
         
-        print(np.max(m))
-            
-        if dtype is not None: m = m.astype(dtype) 
+        if dtype is not None: 
+            m = m.astype(dtype) 
         
-        T.append(m) 
-        
+        return m
+
+    # Sequential processing of chromosomes
+    T = []
+    for chrom in select_BS_ids:
+        T.append(process_chromosome(chrom))
+    
     return T
 
 
@@ -977,3 +1215,333 @@ def kmersFromPPM(ppm, num = 10000, unique = False):
     if unique: kmers = list(np.unique(kmers))
     
     return kmers
+
+
+
+
+
+
+
+
+
+
+
+
+#=================================== NEW FUNCTIONS =======================================
+
+
+# Pre-computed lookup tables for O(1) conversion with default OHEdict
+_NUC_KEYS = list(OHEdict.keys())
+_NUC_TO_IDX = {nuc: i for i, nuc in enumerate(_NUC_KEYS)}
+_NUC_TO_VEC = np.array([OHEdict[k] for k in _NUC_KEYS], dtype=np.float32)
+
+def _process_seq_chunk_fast(args):
+    """Optimized helper function for parallel processing in Seq2OHE"""
+    chunk, nuc_to_idx, nuc_to_vec = args
+    
+    # Vectorized conversion: char -> index -> one-hot vector
+    indices = np.array([nuc_to_idx.get(c, nuc_to_idx['N']) for c in chunk], dtype=np.int8)
+    return nuc_to_vec[indices]
+
+def Seq2OHE(seq, nuc_dict=OHEdict, chunk_size=None, n_jobs=-1, dtype=np.float32):
+    """
+    Convert a single DNA sequence string to one-hot encoding using optimized parallel processing.
+    
+    Parameters:
+    -----------
+    seq : str
+        DNA sequence string (e.g., 'ACGT')
+    nuc_dict : dict
+        Dictionary mapping nucleotides to one-hot vectors
+    chunk_size : int or None
+        Size of chunks for parallel processing. If None, auto-calculates optimal size.
+        (default: None, which uses max(50000, seq_len // (n_workers * 4)))
+    n_jobs : int
+        Number of parallel jobs. -1 uses all available cores (default: -1)
+    dtype : np.dtype
+        Data type for output array (default: np.float32 for memory efficiency)
+        
+    Returns:
+    --------
+    np.ndarray
+        One-hot encoded array of shape (N, 4) where N is sequence length
+    """
+    seq = seq.upper()
+    seq_len = len(seq)
+    
+    # Use pre-computed lookup tables if using default OHEdict, otherwise create new ones
+    if nuc_dict is OHEdict:
+        nuc_to_idx = _NUC_TO_IDX
+        nuc_to_vec = _NUC_TO_VEC
+    else:
+        nuc_keys = list(nuc_dict.keys())
+        nuc_to_idx = {nuc: i for i, nuc in enumerate(nuc_keys)}
+        nuc_to_vec = np.array([nuc_dict[k] for k in nuc_keys], dtype=np.float32)
+    
+    # Determine number of workers
+    if n_jobs == -1:
+        n_workers = multiprocessing.cpu_count()
+    else:
+        n_workers = n_jobs
+    
+    # Auto-calculate optimal chunk size if not provided
+    if chunk_size is None:
+        # Target: 4 chunks per worker for good load balancing
+        # Minimum: 50k bases to amortize overhead
+        # Maximum: 500k bases to keep memory reasonable
+        chunk_size = max(50000, min(500000, seq_len // (n_workers * 4)))
+    
+    # For very short sequences, use simple vectorized approach
+    if seq_len <= chunk_size:
+        indices = np.array([nuc_to_idx.get(c, nuc_to_idx['N']) for c in seq], dtype=np.int8)
+        result = nuc_to_vec[indices]
+        return result.astype(dtype) if dtype != np.float32 else result
+    
+    # Split sequence into chunks for parallel processing
+    n_chunks = (seq_len + chunk_size - 1) // chunk_size
+    chunks = [seq[i*chunk_size:(i+1)*chunk_size] for i in range(n_chunks)]
+    
+    # Prepare arguments for parallel processing
+    args_list = [(chunk, nuc_to_idx, nuc_to_vec) for chunk in chunks]
+    
+    # Adjust workers to actual chunk count
+    n_workers = min(n_workers, n_chunks)
+    
+    # Process chunks in parallel
+    with multiprocessing.Pool(processes=n_workers) as pool:
+        results = pool.map(_process_seq_chunk_fast, args_list)
+    
+    # Concatenate results
+    result = np.vstack(results)
+    return result.astype(dtype) if dtype != np.float32 else result
+
+def OHESlider(ohe_array, window, mode=None, step=1, n_jobs=1):
+    """
+    Slide a window across an OHE array and apply a function.
+    
+    Parameters:
+    -----------
+    ohe_array : np.ndarray
+        One-hot encoded array of shape (N, 4)
+    window : int
+        Size of the sliding window
+    mode : list or None
+        [function, kwargs_dict] to apply to each window. 
+        Function should accept array of shape (window, 4) and **kwargs.
+        If None, returns raw windows.
+    step : int
+        Step size for sliding window (default: 1)
+    n_jobs : int
+        Number of parallel jobs. 1 for sequential, -1 for all cores
+        
+    Returns:
+    --------
+    np.ndarray
+        Results from applying function to each window position
+        
+    Examples:
+    ---------
+    # Get max value per window
+    results = OHESlider(ohe, 10, mode=[np.max, {}])
+    
+    # Get sum along axis 0
+    results = OHESlider(ohe, 10, mode=[np.sum, {'axis': 0}])
+    
+    # Custom scoring function
+    def score_fn(window, threshold=0.5):
+        return np.sum(window > threshold)
+    results = OHESlider(ohe, 10, mode=[score_fn, {'threshold': 0.3}])
+    """
+    seq_len = ohe_array.shape[0]
+    
+    # Calculate number of windows
+    n_windows = (seq_len - window) // step + 1
+    
+    # Use stride tricks for efficient sliding window view
+    ST = np.lib.stride_tricks.sliding_window_view
+    windows = ST(ohe_array, (window, 4))[::step, 0]
+    
+    # If no mode specified, return raw windows
+    if mode is None:
+        return windows
+    
+    # Extract function and kwargs
+    func, kwargs = mode
+    
+    # Sequential processing
+    if n_jobs == 1:
+        results = [func(windows[i], **kwargs) for i in range(n_windows)]
+    # Parallel processing
+    else:
+        n_workers = multiprocessing.cpu_count() if n_jobs == -1 else n_jobs
+        
+        def apply_func(args):
+            window_data, func, kwargs = args
+            return func(window_data, **kwargs)
+        
+        args_list = [(windows[i], func, kwargs) for i in range(n_windows)]
+        
+        with multiprocessing.Pool(processes=n_workers) as pool:
+            results = pool.map(apply_func, args_list)
+    
+    # Try to stack results if they're arrays
+    try:
+        return np.array(results)
+    except:
+        return results
+    
+
+def pwm_score(window, pwm):
+    return np.sum(window * pwm)
+
+
+def OHE_PWM_Scan(ohe_array, pwm, step=1, chunk_size=1000000):
+    """
+    Scan a PWM across an OHE sequence and compute dot product scores.
+    Memory-efficient chunked implementation with overlap to handle boundaries.
+    
+    Parameters:
+    -----------
+    ohe_array : np.ndarray
+        One-hot encoded array of shape (N, 4)
+    pwm : np.ndarray
+        Position Weight Matrix of shape (V, 4)
+    step : int
+        Step size for sliding window (default: 1)
+    chunk_size : int
+        Number of positions to process at once (default: 1000000)
+        
+    Returns:
+    --------
+    np.ndarray
+        Dot product scores at each position, shape (n_positions,)
+    """
+    window_size = pwm.shape[0]
+    seq_len = ohe_array.shape[0]
+    
+    # Calculate total number of positions
+    n_positions = (seq_len - window_size) // step + 1
+    
+    # If sequence is small enough, process all at once
+    if n_positions <= chunk_size:
+        ST = np.lib.stride_tricks.sliding_window_view
+        windows = ST(ohe_array, (window_size, 4))[::step, 0]
+        scores = np.sum(windows * pwm, axis=(-2, -1))
+        return scores
+    
+    # Process in chunks with overlap to handle boundaries
+    all_scores = []
+    
+    for chunk_start in range(0, n_positions, chunk_size):
+        chunk_end = min(chunk_start + chunk_size, n_positions)
+        
+        # Calculate the actual sequence positions for this chunk
+        # Need to extend by (window_size - 1) to get all positions in this chunk
+        seq_start = chunk_start * step
+        seq_end = min(seq_start + (chunk_end - chunk_start - 1) * step + window_size, seq_len)
+        
+        # Extract the chunk of sequence (with overlap for boundary matches)
+        chunk_seq = ohe_array[seq_start:seq_end]
+        
+        # Use stride tricks for efficient sliding windows on this chunk
+        ST = np.lib.stride_tricks.sliding_window_view
+        windows = ST(chunk_seq, (window_size, 4))[::step, 0]
+        
+        # Vectorized dot product for this chunk
+        chunk_scores = np.sum(windows * pwm, axis=(-2, -1))
+        
+        # Only take the scores we need (avoid duplicates from overlap)
+        scores_to_take = min(chunk_size, chunk_end - chunk_start)
+        all_scores.append(chunk_scores[:scores_to_take])
+    
+    # Concatenate all chunk scores
+    scores = np.concatenate(all_scores)
+    
+    return scores
+
+def OHE_PWM_Scan_Both(ohe_array, pwm, step=1, chunk_size=1000000):
+    """
+    Scan a PWM across both strands and return max score at each position.
+    Memory-efficient chunked implementation with proper boundary handling.
+    
+    Parameters:
+    -----------
+    ohe_array : np.ndarray
+        One-hot encoded array of shape (N, 4)
+    pwm : np.ndarray
+        Position Weight Matrix of shape (V, 4)
+    step : int
+        Step size for sliding window (default: 1)
+    chunk_size : int
+        Number of positions to process at once (default: 1000000)
+    
+    Returns:
+    --------
+    np.ndarray
+        Max score at each position (forward or reverse complement)
+    """
+    # Forward strand
+    scores_fwd = OHE_PWM_Scan(ohe_array, pwm, step=step, chunk_size=chunk_size)
+    
+    # Reverse complement strand (flip PWM along both dimensions)
+    pwm_rc = np.flip(pwm, axis=(0, 1))
+    scores_rev = OHE_PWM_Scan(ohe_array, pwm_rc, step=step, chunk_size=chunk_size)
+    
+    # Take max of forward and reverse
+    scores = np.maximum(scores_fwd, scores_rev)
+    
+    return scores
+
+
+
+def PPM2PWM(ppm, background=None, pseudocount=0.01):
+    """
+    Convert a Position Probability Matrix (PPM) to a Position Weight Matrix (PWM).
+    
+    Parameters:
+    -----------
+    ppm : np.ndarray
+        Position Probability Matrix of shape (V, 4) where each row sums to 1
+    background : np.ndarray or None
+        Background nucleotide frequencies [A, C, G, T]. 
+        If None, uses uniform distribution [0.25, 0.25, 0.25, 0.25]
+    pseudocount : float
+        Small value added to avoid log(0) (default: 0.01)
+        
+    Returns:
+    --------
+    np.ndarray
+        Position Weight Matrix of shape (V, 4) with log-odds scores
+        
+    Notes:
+    ------
+    PWM = log2(PPM / background)
+    Higher scores indicate stronger preference for that nucleotide at that position.
+    
+    Examples:
+    ---------
+    # Uniform background
+    pwm = PPM2PWM(ppm)
+    
+    # Custom background (e.g., GC-rich genome)
+    pwm = PPM2PWM(ppm, background=[0.2, 0.3, 0.3, 0.2])
+    
+    # Use with OHESlider for motif scanning
+    results = OHESlider(ohe, window=len(pwm), mode=[pwm_score, {'pwm': pwm}])
+    """
+    # Set default background to uniform distribution
+    if background is None:
+        background = np.array([0.25, 0.25, 0.25, 0.25])
+    else:
+        background = np.array(background)
+    
+    # Add pseudocount to avoid log(0)
+    ppm_pseudo = ppm + pseudocount
+    
+    # Normalize after adding pseudocount
+    ppm_pseudo = ppm_pseudo / ppm_pseudo.sum(axis=1, keepdims=True)
+    
+    # Calculate log-odds: log2(observed / expected)
+    pwm = np.log2(ppm_pseudo / background)
+    
+    return pwm
