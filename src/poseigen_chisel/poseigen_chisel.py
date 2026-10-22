@@ -1545,3 +1545,92 @@ def PPM2PWM(ppm, background=None, pseudocount=0.01):
     pwm = np.log2(ppm_pseudo / background)
     
     return pwm
+
+
+
+
+
+
+#=====================================
+''' Additional related functions for analyzing non-Oyster models'''
+
+import os
+
+def generate_random_seqs(total_seq_len, num_rand, save_pn=None, seed=None):
+    """
+    Generate or load a fixed set of random one-hot sequences.
+
+    Parameters
+    ----------
+    total_seq_len : int
+    num_rand : int
+    save_pn : str or None
+        Full path (including file name, no extension needed) to cache the array.
+    seed : int or None
+
+    Returns
+    -------
+    np.ndarray, shape (num_rand, total_seq_len, 4)
+    """
+    if save_pn is not None and os.path.isfile(save_pn):
+        return se.PickleLoad(save_pn)
+
+    if seed is not None:
+        np.random.seed(seed)
+
+    rand_bases = np.random.randint(0, 4, size=(num_rand, total_seq_len))
+    seqs = np.eye(4, dtype=np.float32)[rand_bases]
+
+    if save_pn is not None:
+        se.NewFolder(os.path.dirname(save_pn))
+        se.PickleDump(seqs, save_pn)
+
+    return seqs
+
+def sample_kmers_from_motif(motif_mat, n_kmers):
+    """
+    Sample one-hot k-mers from a motif probability matrix.
+
+    Returns
+    -------
+    np.ndarray, shape (n_kmers, motif_len, 4)
+    """
+    motif_len, n_bases = motif_mat.shape
+    cs = motif_mat.cumsum(axis=1)                       # (motif_len, 4)
+    r = np.random.rand(n_kmers, motif_len, 1)           # (n_kmers, motif_len, 1)
+    sampled_bases = (r < cs[None, :, :]).argmax(axis=2) # (n_kmers, motif_len)
+    kmers = np.eye(n_bases, dtype=np.float32)[sampled_bases]
+    return kmers
+
+
+def score_kmer_similarity(kmer_onehot, motif_mat, eps=1e-8):
+    """
+    Score a sampled one-hot k-mer against the original PPM using
+    similarity = 1 / euclidean_distance.
+
+    Returns
+    -------
+    float
+    """
+    dist = np.sqrt(np.sum((kmer_onehot - motif_mat) ** 2))
+    return 1.0 / (dist + eps)
+
+def embed_kmer_in_seqs(kmer_onehot, random_seqs, position):
+    """
+    Insert a single one-hot k-mer into every sequence in `random_seqs`.
+
+    Parameters
+    ----------
+    kmer_onehot : np.ndarray, shape (motif_len, 4)
+    random_seqs : np.ndarray, shape (num_rand, total_seq_len, 4)
+    position : int
+
+    Returns
+    -------
+    np.ndarray, shape (num_rand, total_seq_len, 4)
+    """
+    seqs = random_seqs.copy()
+    motif_len = len(kmer_onehot)
+    end = position + motif_len
+    seqs[:, position:end, :] = kmer_onehot[None, :, :]
+    return seqs
